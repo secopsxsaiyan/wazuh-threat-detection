@@ -1,0 +1,260 @@
+<!--
+  zz_threat_detection_rules.xml — high-value cross-domain threat detections for Wazuh 4.x.
+  https://github.com/secopsxsaiyan/wazuh-threat-detection
+
+  ID blocks: 101400-101453 (TTP detections: 101400, 101403, 101404, 101410, 101420, 101430,
+  101435, 101436, 101451-101453), 101500-101502 (wazuh-authd enrollment), 100362 (sudo burst)
+  and 100234-100237 (Spamhaus DROP).
+
+  DESIGN PRINCIPLE: this is NOT a "re-rate everything to the alert gate" pack. It is a
+  DELIBERATELY SMALL set of high-value attacker TTPs that a small team can realistically triage
+  AND that plausibly REQUIRE A RESPONSE. No visibility-only or "unsilence the stock rule" alerts
+  (account create/delete, off-hours login, blocked-and-handled events) — those create fatigue
+  without action. Every rule here is something you'd want to be paged about: an interactive
+  foothold, the SIEM being blinded, ransomware-grade impact, an active (un-blocked) intrusion,
+  a bootkit, allowed traffic with a hijacked network, clock tampering, a sudo burst, a rogue
+  agent enrollment or a malicious network-IDS signature.
+
+  LOAD ORDER: several rules chain off parents defined in OTHER packs (see README,
+  "Cross-pack parents"). Wazuh loads rule files alphabetically and drops a child whose if_sid
+  parent is not yet defined, so keep the zz_ prefix — this file must load last.
+-->
+<group name="soc_threat_detection,">
+
+  <!-- ============================================================
+       A. Interactive foothold — reverse/bind shell via netcat/socat
+       (auditd EXECVE, parent 200111, T1059.004).
+       Scoped to the forms auditd execve actually exposes: nc/ncat/socat invoked with an
+       exec/connect flag (single-token args, not hex-encoded). Near-zero FP — the exec flag is
+       the malicious idiom.
+       NOTE: bash `>& /dev/tcp/...` and `python -c '<payload>'` reverse shells are NOT reliably
+       visible via execve (bash redirections aren't execve args; quoted payloads are hex-encoded
+       by auditd). Those need eBPF connect() telemetry (Tetragon/Falco).
+       ============================================================ -->
+  <rule id="101400" level="13">
+    <if_sid>200111</if_sid>
+    <field name="audit.execve.a0" type="pcre2">(?i)(^|/)(nc|ncat|netcat|socat)$</field>
+    <field name="audit.execve.a1" type="pcre2">(?i)^-{1,2}e$|^-{1,2}exec|^-c$|^exec:|^tcp[46]?:|^tcp-connect:|^openssl-connect:</field>
+    <description>Possible reverse/bind shell: $(audit.execve.a0) spawned with an exec/connect flag (T1059.004).</description>
+    <mitre><id>T1059.004</id></mitre>
+    <group>execve,reverse_shell,</group>
+  </rule>
+
+  <!-- ============================================================
+       B. SIEM blinding — auditd disabled (auditd EXECVE, parent 200111, T1562.012).
+       auditctl -D (purge all rules) or -e 0 (disable auditing). If your own audit-rule reload
+       trips this, scope it to interactive sessions (auid>=1000).
+       ============================================================ -->
+  <rule id="101403" level="13">
+    <if_sid>200111</if_sid>
+    <field name="audit.execve.a0" type="pcre2">(?i)(^|/)auditctl$</field>
+    <field name="audit.execve.a1" type="pcre2">^-D$|^-e$</field>
+    <description>Auditd disabled or rules purged via auditctl ($(audit.execve.a1)) — possible SIEM evasion (T1562.012).</description>
+    <mitre><id>T1562.012</id><id>T1562.001</id></mitre>
+    <group>execve,audit_evasion,</group>
+  </rule>
+
+  <!-- ============================================================
+       C. Resource hijacking — cryptominer (auditd EXECVE, parent 200111, T1496).
+       Matches the miner binary NAME in a0 (clean single token, plaintext). Covers the dominant
+       in-the-wild Linux miners incl. the kinsing/kdevtmpfsi campaign that hits exposed
+       Docker/Redis. Fully-renamed miners evade name-matching but surface via the pool's stratum
+       connection (firewall / threat-intel) and CPU anomalies — defense in depth.
+       ============================================================ -->
+  <rule id="101404" level="12">
+    <if_sid>200111</if_sid>
+    <field name="audit.execve.a0" type="pcre2">(?i)(^|/)(xmrig|kinsing|kdevtmpfsi|kdevtmpfsicat|minerd|cpuminer|xmr-stak|xmr_stak|nbminer|t-rex|phoenixminer|lolminer|cgminer|bfgminer|ccminer|nanominer|teamredminer|ethminer)$</field>
+    <description>Possible cryptominer execution ($(audit.execve.a0)) — resource hijacking (T1496).</description>
+    <mitre><id>T1496</id></mitre>
+    <group>execve,cryptomining,</group>
+  </rule>
+
+  <!-- ============================================================
+       D. Active intrusion — UniFi IPS Critical/High NOT blocked
+       (UniFi CEF, parent 100310 from wazuh-unifi, T1190).
+       Only the UN-blocked case: a blocked signature is handled and does not need a response.
+       This is an exploit landing on the network with no mitigation.
+       ============================================================ -->
+  <rule id="101410" level="14">
+    <if_sid>100310</if_sid>
+    <field name="unifi.risk" type="pcre2">(?i)^(critical|high)$</field>
+    <description>UniFi IPS: CRITICAL/HIGH signature NOT blocked [$(unifi.risk)] $(unifi.ipsSignature) — active intrusion (T1190).</description>
+    <mitre><id>T1190</id></mitre>
+    <group>ids,unifi_ips,intrusion_detection,</group>
+  </rule>
+
+  <!-- ============================================================
+       E. SIEM blinding on storage — TrueNAS audit/syslog/alert config change
+       (TNAUDIT, parent 100345 from wazuh-truenas, T1562.006). Mass deletion (T1490/T1485) and
+       pool/disk health are covered by the wazuh-truenas pack itself; this closes the
+       "attacker turns off NAS audit/syslog first" blind spot.
+       ============================================================ -->
+  <rule id="101420" level="10">
+    <if_sid>100345</if_sid>
+    <field name="TNAUDIT.event">^METHOD_CALL$</field>
+    <field name="TNAUDIT.event_data" type="pcre2">"method":\s*"(audit\.update|system\.advanced\.update|system\.syslog|alertservice\.|alert\.policy)</field>
+    <description>TrueNAS: audit/syslog/alert configuration changed by $(TNAUDIT.user) from $(TNAUDIT.addr) — possible SIEM evasion (T1562.006).</description>
+    <mitre><id>T1562.006</id></mitre>
+    <group>truenas,truenas_audit,audit_evasion,</group>
+  </rule>
+
+  <!-- ============================================================
+       F. Bootkit / kernel tamper — /boot change (syscheck, stock parents 550/553/554,
+       T1601/T1542). Requires /boot in syscheck scope. FP-NOTE: kernel package updates
+       legitimately touch /boot — an alert during a known apt/dnf upgrade is benign; one
+       outside an update window is the signal. Rare enough to keep as a page.
+       ============================================================ -->
+  <rule id="101430" level="12">
+    <if_sid>550,553,554</if_sid>
+    <field name="file" type="pcre2">^/boot/(vmlinuz|initrd|initramfs|grub|grub2|efi|System\.map|vmlinux)</field>
+    <description>FIM: /boot kernel or bootloader file changed ($(file)) — possible bootkit/kernel tamper (T1601).</description>
+    <mitre><id>T1601</id><id>T1542</id></mitre>
+    <group>syscheck,fim_escalation,boot_integrity,</group>
+  </rule>
+
+  <!-- ============================================================
+       G. Spamhaus DROP — traffic involving hijacked / "do not route" networks.
+       List: etc/lists/spamhaus-drop (kept separate from any MISP list), refreshed by
+       feeds/refresh_spamhaus_drop.py.
+       PREREQS:
+         - <list>etc/lists/spamhaus-drop</list> declared in ossec.conf <ruleset>, and the file
+           present before the manager starts.
+         - Keys in DOTTED-PREFIX form ("1.10.16.:", "1.19.:"). Wazuh 4.x address_match_key
+           matches an IP against its /8, /16, /24 and full-address prefixes; it does NOT match
+           CIDR keys ("1.10.16.0/20:"), so a raw DROP file would never fire. The refresher
+           script expands every CIDR to octet-boundary prefixes.
+       100234/100235 chain off the UniFi firewall parent 100320 (wazuh-unifi) and fire only on
+       ALLOWED flows (fw_action A) — dropped flows are already handled.
+       100236 chains off stock 5715 (sshd: authentication success).
+       100237 chains off stock 31100 (web access log) and 31108 (stock "Ignored URLs", level 0,
+       which claims many 2xx/3xx requests before 31100's other children are evaluated).
+       ============================================================ -->
+  <rule id="100234" level="12">
+    <if_sid>100320</if_sid>
+    <field name="unifi.fw_action">^A$</field>
+    <list field="srcip" lookup="address_match_key">etc/lists/spamhaus-drop</list>
+    <description>Spamhaus DROP: allowed UniFi flow from a hijacked range $(srcip) -> $(dstip)</description>
+    <group>threat_intel,spamhaus_drop,unifi_firewall,</group>
+  </rule>
+  <rule id="100235" level="12">
+    <if_sid>100320</if_sid>
+    <field name="unifi.fw_action">^A$</field>
+    <list field="dstip" lookup="address_match_key">etc/lists/spamhaus-drop</list>
+    <description>Spamhaus DROP: allowed UniFi flow to a hijacked range $(srcip) -> $(dstip)</description>
+    <group>threat_intel,spamhaus_drop,unifi_firewall,</group>
+  </rule>
+  <rule id="100236" level="12">
+    <if_sid>5715</if_sid>
+    <list field="srcip" lookup="address_match_key">etc/lists/spamhaus-drop</list>
+    <description>Spamhaus DROP: SSH login succeeded from a hijacked range $(srcip)</description>
+    <group>threat_intel,spamhaus_drop,authentication_success,</group>
+  </rule>
+  <rule id="100237" level="12">
+    <if_sid>31100,31108</if_sid>
+    <list field="srcip" lookup="address_match_key">etc/lists/spamhaus-drop</list>
+    <description>Spamhaus DROP: web request from a hijacked range $(srcip)</description>
+    <group>threat_intel,spamhaus_drop,web,</group>
+  </rule>
+
+  <!-- ============================================================
+       H. Forensic timestamp tampering — system clock changed
+       (auditd, stock parent 80700, T1070.006).
+       PREREQ: an auditd rule tagging clock-change syscalls with key "time-change"
+       (adjtimex/settimeofday/clock_settime, b64+b32, plus a write watch on /etc/localtime —
+       see README). An attacker who resets the clock can backdate files and break log
+       correlation. Legitimate time daemons are de-rated by 101436.
+       ============================================================ -->
+  <rule id="101435" level="10">
+    <if_sid>80700</if_sid>
+    <field name="audit.key">^time-change$</field>
+    <description>Auditd: system clock changed via adjtimex/settimeofday/clock_settime by a non-time-daemon ($(audit.exe)) — possible forensic timestamp tampering (T1070.006).</description>
+    <mitre><id>T1070.006</id></mitre>
+    <group>audit,time_change,audit_evasion,</group>
+  </rule>
+  <!-- Legitimate time sources (NTP/chrony/timesyncd/hwclock, systemd at boot) -> L1. -->
+  <rule id="101436" level="1">
+    <if_sid>101435</if_sid>
+    <field name="audit.exe" type="pcre2">chronyd|systemd-timesyncd|/ntpd$|/ntpdate$|/hwclock$|/systemd$</field>
+    <description>Auditd: clock change by a legitimate time daemon ($(audit.exe)) — de-rated.</description>
+    <group>audit,time_change,</group>
+  </rule>
+
+  <!-- ============================================================
+       I. Rapid privilege escalation — sudo-to-root burst (stock parent 5402, T1548.003).
+       5 successful sudo-to-root commands by the SAME user within 60 s. A single sudo is
+       routine; a tight burst from one account is typical of scripted post-exploitation or a
+       hijacked session. If you run automation that sudoes in loops under a dedicated
+       account, exclude that account rather than raising the threshold.
+       <same_srcuser /> compares the static srcuser field (the invoking user). Do NOT use
+       <same_user /> (compares dstuser = root for every event, so 5 different users would
+       fire) or <same_field>data.srcuser</same_field> (srcuser is a static field, not a
+       dynamic data.* field, so it never matches). Verified with wazuh-logtest on 4.14.5.
+       ============================================================ -->
+  <rule id="100362" level="10" frequency="5" timeframe="60">
+    <if_matched_sid>5402</if_matched_sid>
+    <same_srcuser />
+    <description>Sudo: rapid successive root escalations by $(srcuser) — possible account compromise or automation (T1548.003).</description>
+    <mitre><id>T1548.003</id></mitre>
+    <group>sudo,privilege_escalation,</group>
+  </rule>
+
+  <!-- ============================================================
+       J. Rogue agent enrollment — wazuh-authd (manager's own ossec.log, T1200).
+       PREREQ: the manager must collect its own /var/ossec/logs/ossec.log as a localfile
+       (see README). ossec.log timestamps are not syslog-formatted, so the program-name
+       pre-decoder is unreliable: 101500 matches the raw "wazuh-authd:" tag instead.
+       101501: failed/unauthorized enrollment (bad password, rejected request).
+       101502: a NEW agent was accepted — should be rare; verify it is expected.
+       Duplicate-name messages are deliberately not matched here (covered by community
+       rulesets).
+       ============================================================ -->
+  <rule id="101500" level="3">
+    <match>wazuh-authd:</match>
+    <description>wazuh-authd: agent-enrollment daemon message.</description>
+    <group>wazuh,authd,enrollment,</group>
+  </rule>
+  <rule id="101501" level="12">
+    <if_sid>101500</if_sid>
+    <match>Invalid password|Unable to add agent|Rejected|unauthorized|not authorized|denied|Invalid request</match>
+    <description>wazuh-authd: failed/unauthorized agent enrollment attempt — possible rogue-agent registration.</description>
+    <mitre><id>T1200</id></mitre>
+    <group>wazuh,authd,enrollment,authentication_failure,attacks,</group>
+  </rule>
+  <rule id="101502" level="10">
+    <if_sid>101500</if_sid>
+    <match>Received request for a new agent|Agent key generated</match>
+    <description>wazuh-authd: NEW agent registration accepted — verify the agent is expected (enrollment should be rare).</description>
+    <mitre><id>T1200</id></mitre>
+    <group>wazuh,authd,enrollment,</group>
+  </rule>
+
+  <!-- ============================================================
+       K. Network IDS — Suricata eve.json alerts (stock parent 86601, event_type=alert).
+       PREREQ: Suricata eve.json collected with <log_format>json</log_format> (see README).
+       Stock 86601 keeps every alert at L3; these children raise only malicious-intent
+       categories, high-confidence Emerging Threats signature classes and scan/recon.
+       A plain alert.severity -> level mapping is intentionally NOT included (it re-rates
+       every policy/info signature and floods triage).
+       ============================================================ -->
+  <rule id="101451" level="12">
+    <if_sid>86601</if_sid>
+    <field name="alert.category" type="pcre2">(?i)(Trojan|Malware|Exploit|Administrator Privilege|Command and Control|Coin ?Miner|Attack Response|Worm|Exfiltration)</field>
+    <description>Suricata: malicious-category IDS alert ($(alert.category)) — $(alert.signature)</description>
+    <mitre><id>T1190</id></mitre>
+    <group>ids,suricata,suricata_malicious_category,</group>
+  </rule>
+  <rule id="101452" level="12">
+    <if_sid>86601</if_sid>
+    <field name="alert.signature" type="pcre2">(?i)ET (MALWARE|TROJAN|EXPLOIT|CNC|WORM|ATTACK_RESPONSE|MOBILE_MALWARE)</field>
+    <description>Suricata: high-confidence ET threat signature ($(alert.signature))</description>
+    <group>ids,suricata,suricata_et_threat,</group>
+  </rule>
+  <rule id="101453" level="10">
+    <if_sid>86601</if_sid>
+    <field name="alert.category" type="pcre2">(?i)(Network Scan|Attempted Information Leak|Potentially Bad Traffic|Detection of a Network Scan)</field>
+    <description>Suricata: scan/recon IDS alert ($(alert.category)) — $(alert.signature)</description>
+    <mitre><id>T1046</id></mitre>
+    <group>ids,suricata,suricata_scan,</group>
+  </rule>
+
+</group>
