@@ -217,7 +217,7 @@ f=/var/ossec/etc/lists/spamhaus-drop; [ -e "$f" ] || { touch "$f"; chown wazuh:w
 ### 2. Populate it — `feeds/refresh_spamhaus_drop.py`
 
 Wazuh 4.x `address_match_key` matches an IP against keys of the form `a.`, `a.b.`, `a.b.c.` and
-`a.b.c.d` — it does **not** match CIDR keys (`1.10.16.0/20:` never matches; verified on 4.14.5).
+`a.b.c.d` — it does **not** match CIDR keys (`198.18.16.0/20:` never matches; verified on 4.14.5).
 The script downloads DROP, keeps the IPv4 networks and expands each to exact octet-boundary
 prefix keys (a `/20` becomes 16 `/24` keys, a `/15` two `/16` keys). A typical run turns ~1,700
 networks into ~13,000 keys. It refuses a download outside 50–5,000 networks, so a bad fetch can't
@@ -244,7 +244,7 @@ python3 feeds/refresh_spamhaus_drop.py
 | `SPAMHAUS_OUTPUT_FILE` | — | write the list to this path (file mode) |
 | `WAZUH_API` / `WAZUH_USER` / `WAZUH_PASS` / `WAZUH_PASS_FILE` | — / `wazuh-wui` / — / — | API mode |
 | `WAZUH_CA_BUNDLE` / `WAZUH_INSECURE` | — / `0` | API TLS verification |
-| `SPAMHAUS_DROP_URL` | `https://www.spamhaus.org/drop/drop.txt` | feed URL (the JSON-lines `drop_v4.json` also works) |
+| `SPAMHAUS_DROP_URL` | `https://www.spamhaus.org/drop/drop_v4.json` | feed URL (the legacy text `drop.txt` also works until Spamhaus retires it) |
 | `LIST_NAME` | `spamhaus-drop` | CDB list name |
 | `MIN_NETS` / `MAX_NETS` | `50` / `5000` | sanity bounds |
 | `DRY_RUN` | `0` | `1` = fetch, convert and print a summary only |
@@ -257,7 +257,7 @@ DROP changes slowly; once a day is plenty (never poll more often than hourly):
 17 4 * * * root SPAMHAUS_OUTPUT_FILE=/var/ossec/etc/lists/spamhaus-drop /usr/bin/python3 /opt/wazuh-threat-detection/feeds/refresh_spamhaus_drop.py && /var/ossec/bin/wazuh-control restart
 ```
 
-Check the [Spamhaus DROP terms of use](https://www.spamhaus.org/blocklists/do-not-route-or-peer/)
+Check the [Spamhaus DROP terms of use](https://www.spamhaus.org/drop/terms/)
 before using the feed in your environment.
 
 ## Scope & honest limits

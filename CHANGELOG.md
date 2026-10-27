@@ -3,6 +3,13 @@
 All notable changes to this pack are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- `feeds/refresh_spamhaus_drop.py` now defaults to Spamhaus's recommended JSON feed
+  (`drop_v4.json`); the legacy `drop.txt` still works until Spamhaus retires it.
+- README links the Spamhaus DROP terms of use directly.
+- Format examples use reserved addresses (198.18.0.0/15) instead of real DROP entries.
+
 ## [1.0.0] — 2026-10-26
 
 - Initial public release.

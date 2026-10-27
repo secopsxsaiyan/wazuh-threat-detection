@@ -119,9 +119,9 @@
        PREREQS:
          - <list>etc/lists/spamhaus-drop</list> declared in ossec.conf <ruleset>, and the file
            present before the manager starts.
-         - Keys in DOTTED-PREFIX form ("1.10.16.:", "1.19.:"). Wazuh 4.x address_match_key
+         - Keys in DOTTED-PREFIX form ("198.18.16.:", "198.19.:"). Wazuh 4.x address_match_key
            matches an IP against its /8, /16, /24 and full-address prefixes; it does NOT match
-           CIDR keys ("1.10.16.0/20:"), so a raw DROP file would never fire. The refresher
+           CIDR keys ("198.18.16.0/20:"), so a raw DROP file would never fire. The refresher
            script expands every CIDR to octet-boundary prefixes.
        100234/100235 chain off the UniFi firewall parent 100320 (wazuh-unifi) and fire only on
        ALLOWED flows (fw_action A) — dropped flows are already handled.

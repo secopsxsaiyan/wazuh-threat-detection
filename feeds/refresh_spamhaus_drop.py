@@ -4,7 +4,7 @@
 Part of https://github.com/secopsxsaiyan/wazuh-threat-detection (rules 100234-100237).
 
 The DROP list holds IPv4 CIDRs. Wazuh 4.x `address_match_key` does not match CIDR keys, so
-each network is expanded to dotted-prefix keys on octet boundaries ("1.10.16.", "1.19.",
+each network is expanded to dotted-prefix keys on octet boundaries ("198.18.16.", "198.19.",
 "10.") which `address_match_key` does match.
 
 Output goes to ONE of:
@@ -13,8 +13,8 @@ Output goes to ONE of:
                     uploads via PUT /lists/files/spamhaus-drop?overwrite=true.
 
 Environment (defaults in brackets):
-  SPAMHAUS_DROP_URL     feed URL [https://www.spamhaus.org/drop/drop.txt]; the JSON-lines
-                        variant (drop_v4.json) is also understood
+  SPAMHAUS_DROP_URL     feed URL [https://www.spamhaus.org/drop/drop_v4.json]; the legacy
+                        text drop.txt is also understood until Spamhaus retires it
   SPAMHAUS_OUTPUT_FILE  write the list here instead of using the API
   WAZUH_API             e.g. https://wazuh-manager.example:55000
   WAZUH_USER            API user [wazuh-wui]
@@ -43,7 +43,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_URL = "https://www.spamhaus.org/drop/drop.txt"
+DEFAULT_URL = "https://www.spamhaus.org/drop/drop_v4.json"
 USER_AGENT = "wazuh-threat-detection/spamhaus-drop-refresh"
 TIMEOUT = 60
 
